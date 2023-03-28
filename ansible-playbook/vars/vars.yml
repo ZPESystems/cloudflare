@@ -1,0 +1,24 @@
+# ./vars/vars.yml
+# Cloudflare WARP token
+cloudflare_organization: zpe-demo
+cloudflare_auth_client_id: 867f058187d3c48c1f18c17a52b7fae4.access
+cloudflare_auth_client_secret: d711975bbf6c2d37c197638eb684de888f349406c4c53a57b875dbcf15b9136d
+  
+# VM LAN interface
+lan_interface: ens10
+
+# Cloudflare LAN
+# Split Tunnel LAN network enabled in cloudflare
+cloudflare_network: 192.168.99.0/24
+cloudflare_address_a: 192.168.99.1/24
+cloudflare_address_b: 192.168.99.2/24
+cloudflare_gateway: 192.168.99.1
+
+# ZPE LAN
+# LAN DHCP server parameters (no need to be modified) 
+zpe_address: 192.168.100.1/24
+zpe_gateway: 192.168.100.1
+zpe_dhcp_range_from: 192.168.100.10
+zpe_dhcp_range_to: 192.168.100.50
+zpe_dhcp_subnet: 255.255.255.0
+zpe_dhcp_lease_time: 24h

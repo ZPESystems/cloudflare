@@ -1,0 +1,207 @@
+- name: Cloudflare WARP
+  hosts: localhost
+  connection: local
+  become: true
+  tasks:
+
+  - include_vars: vars.yml
+  - name: apt install required packages
+    apt:
+      update_cache: yes
+      name:
+        - wget
+        - curl 
+        - gpg
+        - iptables
+        - gnupg2
+        - dnsmasq
+      state: present
+
+  - name: enable IP forwarding on IPv4
+    sysctl:
+      name: net.ipv4.ip_forward
+      value: 1
+      sysctl_set: yes
+      state: present
+      reload: yes 
+
+  - name: Download Cloudflare CA
+    get_url:
+      url: https://developers.cloudflare.com/cloudflare-one/static/documentation/connections/Cloudflare_CA.pem
+      dest: /usr/local/share/ca-certificates/Cloudflare_CA.crt
+
+  - name: Reconfigure ca-certificates
+    environment:
+      DEBIAN_FRONTEND: 'noninteractive'
+      DEBCONF_NONINTERACTIVE_SEEN: 'true'    
+    command: dpkg-reconfigure --frontend=noninteractive ca-certificates
+
+  - name: import the cloudflare apt key
+    apt_key:
+      url: https://pkg.cloudflareclient.com/pubkey.gpg
+      state: present
+
+  - name: add cloudflare deb repository
+    apt_repository:
+      repo: deb https://pkg.cloudflareclient.com/ {{ ansible_distribution_release }} main
+      state: present
+    become: true
+    register: apt_repository_output
+
+  - name: install cloudflare-warp
+    apt:
+      update_cache: yes
+      name: cloudflare-warp
+      state: present
+  
+  - name: zpecloudflare.conf config file
+    template:
+      src: "zpecloudflare.conf.j2"
+      dest: "/etc/zpecloudflare.conf"
+
+  - name: Cloudflare mdm.xml config file
+    template:
+      src: "mdm.xml.j2"
+      dest: "/var/lib/cloudflare-warp/mdm.xml"
+  
+  - name: dnsmasq.conf config file
+    template:
+      src: "dnsmasq.conf.j2"
+      dest: "/etc/dnsmasq.conf"
+  
+  - name: dnsmasqns.conf network ns config file
+    template:
+      src: "dnsmasqns.conf.j2"
+      dest: "/etc/dnsmasqns.conf"
+
+  - name: Create netns@.service
+    copy:
+      dest: /etc/systemd/system/netns@.service
+      content: |
+        [Unit]
+        Description=Named network namespace %i
+        StopWhenUnneeded=true
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+
+        # Ask systemd to create a network namespace
+        PrivateNetwork=yes
+        
+        # Ask ip netns to create a named network namespace
+        # (This ensures that things like /var/run/netns are properly setup)
+        ExecStart=/sbin/ip netns add %i
+        
+        # Drop the network namespace that ip netns just created
+        ExecStart=/bin/umount /var/run/netns/%i
+        
+        # Re-use the same name for the network namespace that systemd put us in
+        ExecStart=/bin/mount --bind /proc/self/ns/net /var/run/netns/%i
+        
+        # Connect the network namespace with netns 1
+        ExecStart=/usr/sbin/ip link add dev A-%i type veth peer name B-%i
+        ExecStart=/usr/sbin/ip link set dev B-%i up
+        ExecStart=/usr/sbin/ip link set dev lo up
+        ExecStart=/usr/sbin/ip link set dev A-%i netns 1
+        
+        # Clean up the name when we are done with the network namespace
+        ExecStop=/sbin/ip netns delete %i
+  
+  - name: Create attach-zpelan@.service
+    copy:
+      dest: /etc/systemd/system/attach-zpelan@.service
+      content: |
+        [Unit]
+        Description=Attach LAN Interface to Named network namespace %i
+        Requires=netns@%i.service
+        After=netns@%i.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+
+        # Environment File containing LAN Interfaces and the IP address and gateway
+        EnvironmentFile=/etc/zpecloudflare.conf
+        
+        # Associate the LAN_INTERFACE NIC with the network namespace
+        ExecStart=/usr/sbin/ip link set ${LAN_INTERFACE} netns %i
+        
+        # Run iproute2 (inside the netns) to bring the NIC up
+        ExecStart=/usr/sbin/ip netns exec %i ip l set up dev ${LAN_INTERFACE}
+        
+        # Run iproute2 (inside the netns) to add the address/gateway
+        ExecStart=/usr/sbin/ip netns exec %i ip a add ${ZPE_ADDRESS} dev ${LAN_INTERFACE}
+        ExecStart=/usr/sbin/ip netns exec %i ip a add ${CLOUDFLARE_ADDRESS_B} dev B-%i
+        ExecStart=/usr/sbin/ip link set up dev A-%i
+        ExecStart=/usr/sbin/ip addr add ${CLOUDFLARE_ADDRESS_A} dev A-%i
+        ExecStart=/usr/sbin/ip netns exec %i ip r add default via ${CLOUDFLARE_GATEWAY}
+        ExecStart=/usr/sbin/ip netns exec %i iptables -t nat -A POSTROUTING -o B-%i -j MASQUERADE
+        ExecStart=/usr/sbin/iptables -t nat -A POSTROUTING --src ${CLOUDFLARE_NETWORK} -j MASQUERADE
+        ExecStart=/usr/bin/systemctl restart dnsmasq
+        
+        # Run iproute2 (inside the netns) to bring the NIC down (on stop)
+        ExecStop=/usr/sbin/ip netns exec %i ip l set down dev ${LAN_INTERFACE}
+        ExecStop=/usr/sbin/ip netns exec %i iptables -t nat -D POSTROUTING -o B-%i -j MASQUERADE
+        ExecStop=/usr/sbin/iptables -t nat -D POSTROUTING --src ${CLOUDFLARE_NETWORK} -j MASQUERADE
+
+  - name: Create dhcpserver.service
+    copy:
+      dest: /etc/systemd/system/dhcpserver.service
+      content: |
+        [Unit]
+        Description=DHCP Service running in Netns
+
+        # Require the network namespace is set up
+        Requires=netns@dhcpserver.service
+        After=netns@dhcpserver.service
+        JoinsNamespaceOf=netns@dhcpserver.service
+        
+        # Require the interface is set up
+        Requires=attach-zpelan@dhcpserver.service
+        After=attach-zpelan@dhcpserver.service
+        
+        [Service]
+        Type=simple
+        RemainAfterStart=true
+        
+        # Run the process in a non-default netns
+        PrivateNetwork=true
+        
+        # Add additional limitation on privileges
+        # (this is unrelated to network namespaces)
+        ProtectSystem=true
+        
+        # Start the dnsmasq dhcpserver
+        ExecStart=dnsmasq -d -C /etc/dnsmasqns.conf
+        
+        # Reload the service
+        ExecReload=/bin/kill -HUP $MAINPID
+        
+        [Install]
+        WantedBy=multi-user.target
+
+  - name: Reload the SystemD to re-read configurations
+    systemd:
+      daemon-reload: yes
+  
+  - name: Enable the dhcp service and start
+    systemd:
+      name: '{{ item }}.service'
+      enabled: yes
+      state: started
+    loop:
+      - netns@dhcpserver
+      - attach-zpelan@dhcpserver
+      - dhcpserver
+
+  - name: Cloudflare WARP registration
+    shell: warp-cli --accept-tos register 
+    register: output
+  
+  - name: Cloudflare WARP connect
+    shell: warp-cli --accept-tos connect
+    register: warpoutput
+
+  - name: Print Cloudflare WARP connect result
+    debug:
+      msg: "{{ warpoutput }}"

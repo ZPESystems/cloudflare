@@ -1,0 +1,32 @@
+[Unit]
+Description=DHCP Service running in Netns
+
+# Require the network namespace is set up
+Requires=netns@dhcpserver.service
+After=netns@dhcpserver.service
+JoinsNamespaceOf=netns@dhcpserver.service
+
+# Require the interface is set up
+Requires=attach-zpelan@dhcpserver.service
+After=attach-zpelan@dhcpserver.service
+
+[Service]
+Type=simple
+RemainAfterStart=true
+
+# Run the process in a non-default netns
+PrivateNetwork=true
+
+# Add additional limitation on privileges
+# (this is unrelated to network namespaces)
+ProtectSystem=true
+
+# Run dnsmasq in debug mode
+# Start the dnsmasq dhcpserver
+ExecStart=dnsmasq -d -C /etc/dnsmasqns.conf
+
+# Reload
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target
