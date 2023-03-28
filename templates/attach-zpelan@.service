@@ -1,0 +1,34 @@
+[Unit]
+Description=Attach LAN Interface to Named network namespace %i
+Requires=netns@%i.service
+After=netns@%i.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Environment File containing LAN Interfaces and the IP address and gateway
+EnvironmentFile=/etc/zpecloudflare.conf
+
+# Associate the enp7s0 NIC with the network namespace
+ExecStart=/usr/sbin/ip link set ${LAN_INTERFACE} netns %i
+
+# Run iproute2 (inside the netns) to bring the NIC up
+ExecStart=/usr/sbin/ip netns exec %i ip l set up dev ${LAN_INTERFACE}
+
+# Run iproute2 (inside the netns) to add the address/gateway
+ExecStart=/usr/sbin/ip netns exec %i ip a add ${ZPE_ADDRESS} dev ${LAN_INTERFACE}
+ExecStart=/usr/sbin/ip netns exec %i ip a add ${CLOUDFLARE_ADDRESS_B} dev B-%i
+ExecStart=/usr/sbin/ip link set up dev A-%i
+ExecStart=/usr/sbin/ip addr add ${CLOUDFLARE_ADDRESS_A} dev A-%i
+#ExecStart=/usr/sbin/ip netns exec %i ip r add default via ${CLOUDFLARE_ADDRESS_A/\/*/}
+ExecStart=/usr/sbin/ip netns exec %i ip r add default via ${CLOUDFLARE_GATEWAY}
+ExecStart=/usr/sbin/ip netns exec %i iptables -t nat -A POSTROUTING -o B-%i -j MASQUERADE
+ExecStart=/usr/sbin/iptables -t nat -A POSTROUTING --src ${CLOUDFLARE_NETWORK} -j MASQUERADE
+ExecStart=/usr/bin/systemctl restart dnsmasq
+#ExecStart=/usr/sbin/ip netns exec %i ip r add default via $GATEWAY dev enp7s0
+
+# Run iproute2 (inside the netns) to bring the NIC down (on stop)
+ExecStop=/usr/sbin/ip netns exec %i ip l set down dev ${LAN_INTERFACE}
+ExecStop=/usr/sbin/ip netns exec %i iptables -t nat -D POSTROUTING -o B-%i -j MASQUERADE
+ExecStop=/usr/sbin/iptables -t nat -D POSTROUTING --src ${CLOUDFLARE_NETWORK} -j MASQUERADE

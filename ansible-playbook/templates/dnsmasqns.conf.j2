@@ -1,0 +1,26 @@
+listen-address=127.0.0.1,{{ zpe_gateway }}
+interface={{ lan_interface }}
+bind-interfaces
+
+server={{ cloudflare_gateway }}
+# DHCP server
+dhcp-range={{ zpe_dhcp_range_from }},{{ zpe_dhcp_range_to }}, {{ zpe_dhcp_subnet }},{{ zpe_dhcp_lease_time }}
+
+# subnet mask
+dhcp-option=1,{{ zpe_dhcp_subnet }}
+
+# Set gateway as Router. Following two lines are identical.
+#dhcp-option=option:router,{{ zpe_gateway }}
+dhcp-option=3,{{ zpe_gateway }}
+
+# Set DNS server as Router.
+dhcp-option=6,{{ zpe_gateway }}
+
+dhcp-authoritative
+
+# Logging.
+log-facility=/var/log/dnsmasq.log
+log-async
+log-queries # log queries.
+log-dhcp    # log dhcp related messages.
+
